@@ -8,10 +8,8 @@ import tempfile
 import subprocess
 import contextlib
 
-try:
-    from StringIO import StringIO
-except ImportError:
-    from io import StringIO  # Python 3
+# Third-party dependency
+import six
 
 from nose.tools import (
     assert_raises,
@@ -19,10 +17,16 @@ from nose.tools import (
 
 PYTHON = sys.version_info[0]  # e.g. 2 or 3
 
+try:
+    long
+except NameError:
+    # Python 3 compatibility
+    long = int
+
 
 @contextlib.contextmanager
 def captured_output():
-    new_out, new_err = StringIO(), StringIO()
+    new_out, new_err = six.StringIO(), six.StringIO()
     old_out, old_err = sys.stdout, sys.stderr
     try:
         sys.stdout, sys.stderr = new_out, new_err
@@ -119,9 +123,11 @@ def binding(binding):
 
 
 def test_environment():
-    """Tests require all bindings to be installed"""
+    """Tests require all bindings to be installed (except PySide on py3.5+)"""
 
-    imp.find_module("PySide")
+    if sys.version_info <= (3, 4):
+        # PySide is not available for Python > 3.4
+        imp.find_module("PySide")
     imp.find_module("PySide2")
     imp.find_module("PyQt4")
     imp.find_module("PyQt5")
@@ -416,6 +422,24 @@ def test_binding_states():
     assert Qt.IsPyQt4 == binding("PyQt4")
 
 
+def test_qtcompat_base_class():
+    """Tests to ensure the QtCompat namespace object works as expected"""
+    import sys
+    import Qt
+    from Qt import QtWidgets
+    from Qt import QtCompat
+    app = QtWidgets.QApplication(sys.argv)
+    # suppress `local variable 'app' is assigned to but never used`
+    app
+    header = QtWidgets.QHeaderView(Qt.QtCore.Qt.Horizontal)
+
+    # Spot check compatibility functions
+    QtCompat.QHeaderView.setSectionsMovable(header, False)
+    assert QtCompat.QHeaderView.sectionsMovable(header) is False
+    QtCompat.QHeaderView.setSectionsMovable(header, True)
+    assert QtCompat.QHeaderView.sectionsMovable(header) is True
+
+
 def test_cli():
     """Qt.py is available from the command-line"""
     env = os.environ.copy()
@@ -429,6 +453,76 @@ def test_cli():
 
     out, err = popen.communicate()
     assert out.startswith(b"usage: Qt.py"), "\n%s" % out
+
+
+def test_membership():
+    """All members of Qt.py exist in all bindings"""
+    import Qt
+
+    missing = list()
+    for module, members in Qt._common_members.items():
+        missing.extend(
+            member for member in members
+            if not hasattr(getattr(Qt, module), member)
+        )
+
+    binding = Qt.__binding__
+    assert not missing, (
+        "Some members did not exist in {binding}\n{missing}".format(
+            **locals())
+    )
+
+
+if sys.version_info <= (3, 4):
+    # PySide is not available for Python > 3.4
+    # Shiboken(1) doesn't support Python 3.5
+    # https://github.com/PySide/shiboken-setup/issues/3
+
+    def test_wrapInstance():
+        """.wrapInstance and .getCppPointer is identical across all bindings"""
+        from Qt import QtCompat, QtWidgets
+
+        app = QtWidgets.QApplication(sys.argv)
+
+        try:
+            button = QtWidgets.QPushButton("Hello world")
+            button.setObjectName("MySpecialButton")
+            pointer = QtCompat.getCppPointer(button)
+            widget = QtCompat.wrapInstance(long(pointer),
+                                           QtWidgets.QWidget)
+            assert isinstance(widget, QtWidgets.QWidget), widget
+            assert widget.objectName() == button.objectName()
+
+            # IMPORTANT: this differs across sip and shiboken.
+            if binding("PySide") or binding("PySide2"):
+                assert widget != button
+            else:
+                assert widget == button
+
+        finally:
+            app.exit()
+
+    def test_implicit_wrapInstance():
+        """.wrapInstance doesn't need the `base` argument"""
+        from Qt import QtCompat, QtWidgets
+
+        app = QtWidgets.QApplication(sys.argv)
+
+        try:
+            button = QtWidgets.QPushButton("Hello world")
+            button.setObjectName("MySpecialButton")
+            pointer = QtCompat.getCppPointer(button)
+            widget = QtCompat.wrapInstance(long(pointer))
+            assert isinstance(widget, QtWidgets.QWidget), widget
+            assert widget.objectName() == button.objectName()
+
+            if binding("PySide") or binding("PySide2"):
+                assert widget != button
+            else:
+                assert widget == button
+
+        finally:
+            app.exit()
 
 
 if binding("PyQt4"):
@@ -525,24 +619,24 @@ if binding("PySide2"):
         """Qt.py may be use alongside the actual binding"""
 
         from Qt import QtCore
-        import PySide.QtGui
+        import PySide2.QtGui
 
         # Qt remaps QStringListModel
         assert QtCore.QStringListModel
 
         # But does not delete the original
-        assert PySide.QtGui.QStringListModel
+        assert PySide2.QtGui.QStringListModel
 
 
-if binding("PySide") or binding("PySide2"):
+if binding("PyQt4") or binding("PyQt5"):
     def test_multiple_preferred():
         """QT_PREFERRED_BINDING = more than one binding excludes others"""
 
         # PySide is the more desirable binding
         os.environ["QT_PREFERRED_BINDING"] = os.pathsep.join(
-            ["PySide", "PySide2"])
+            ["PyQt4", "PyQt5"])
 
         import Qt
-        assert Qt.__binding__ == "PySide", (
-            "PySide should have been picked, "
+        assert Qt.__binding__ == "PyQt4", (
+            "PyQt4 should have been picked, "
             "instead got %s" % Qt.__binding__)

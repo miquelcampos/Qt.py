@@ -94,7 +94,6 @@ def format_(blocks):
     function_count = 0  # For each test to have a unique name
 
     for block in blocks:
-        function_count += 1
 
         # Validate docstring format of body
         if not any(line[:3] == ">>>" for line in block["body"]):
@@ -107,16 +106,22 @@ def format_(blocks):
             block["body"].insert(0, ">>> assert False, "
                                  "'Invalid binding'\n")
 
-        block["header"] = block["header"]
-        block["count"] = str(function_count)
-        block["body"] = "    ".join(block["body"])
-
-        tests.append("""\
+        if sys.version_info > (3, 4) and block["binding"] in ("PySide"):
+            # Skip caveat test if it requires PySide on Python > 3.4
+            continue
+        else:
+            function_count += 1
+            block["header"] = block["header"]
+            block["count"] = str(function_count)
+            block["body"] = "    ".join(block["body"])
+            tests.append("""\
 
 def test_{count}_{header}():
     '''Test {header}
 
     >>> import os, sys
+    >>> PYTHON = sys.version_info[0]
+    >>> long = int if PYTHON == 3 else long
     >>> _ = os.environ.pop("QT_VERBOSE", None)  # Disable debug output
     >>> os.environ["QT_PREFERRED_BINDING"] = "{binding}"
     {body}
